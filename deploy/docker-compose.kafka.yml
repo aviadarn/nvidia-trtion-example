@@ -1,3 +1,32 @@
+version: "3.9"
+
+services:
+  tritonserver:
+    image: nvcr.io/nvidia/tritonserver:24.08-py3
+    container_name: tritonserver-kafka
+    command:
+      - tritonserver
+      - --model-repository=/models
+      - --strict-model-config=false
+    ports:
+      - "8000:8000" # HTTP
+      - "8001:8001" # gRPC
+      - "8002:8002" # Metrics
+    volumes:
+      - ../models:/models:ro
+      - triton-cache:/opt/tritonserver/caches
+    shm_size: "1g"
+    gpus: all
+    restart: unless-stopped
+
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: kafka-sink
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
 services:
   triton:
     image: nvcr.io/nvidia/tritonserver:24.10-py3
@@ -20,6 +49,107 @@ services:
       KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    volumes:
+      - kafka-data:/bitnami/kafka
+    restart: unless-stopped
+
+  request-producer:
+    image: python:3.11-slim
+    container_name: triton-producer-kafka
+    depends_on:
+      - tritonserver
+    environment:
+      TRITON_HTTP_URL: http://tritonserver:8000/v2/models/your_model/infer
+      OUTPUT_FILE: /shared/inference_outputs.jsonl
+      PRODUCER_INTERVAL_SECONDS: "2"
+    volumes:
+      - shared-output:/shared
+    command: >
+      sh -c "pip install --no-cache-dir requests &&
+      python -u -c '
+      import json, os, time, requests
+      url = os.environ[\"TRITON_HTTP_URL\"]
+      output_file = os.environ[\"OUTPUT_FILE\"]
+      interval = float(os.environ.get(\"PRODUCER_INTERVAL_SECONDS\", \"2\"))
+      payload = {
+        \"inputs\": [{\"name\": \"INPUT__0\", \"shape\": [1, 1], \"datatype\": \"FP32\", \"data\": [1.0]}],
+        \"outputs\": [{\"name\": \"OUTPUT__0\"}]
+      }
+      while True:
+        ts = time.time()
+        try:
+          resp = requests.post(url, json=payload, timeout=10)
+          record = {\"timestamp\": ts, \"status_code\": resp.status_code, \"response\": resp.json() if resp.ok else resp.text}
+        except Exception as e:
+          record = {\"timestamp\": ts, \"error\": str(e)}
+        with open(output_file, \"a\", encoding=\"utf-8\") as f:
+          f.write(json.dumps(record) + \"\\n\")
+        time.sleep(interval)
+      '"
+    restart: unless-stopped
+
+  result-writer:
+    image: python:3.11-slim
+    container_name: triton-consumer-kafka
+    depends_on:
+      - kafka
+      - request-producer
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: triton.inference.results
+      INPUT_FILE: /shared/inference_outputs.jsonl
+    volumes:
+      - shared-output:/shared
+    command: >
+      sh -c "pip install --no-cache-dir kafka-python &&
+      python -u -c '
+      import json, os, time
+      from kafka import KafkaProducer
+
+      bootstrap = os.environ[\"KAFKA_BOOTSTRAP_SERVERS\"]
+      topic = os.environ.get(\"KAFKA_TOPIC\", \"triton.inference.results\")
+      input_file = os.environ[\"INPUT_FILE\"]
+
+      producer = None
+      while producer is None:
+        try:
+          producer = KafkaProducer(
+            bootstrap_servers=bootstrap,
+            value_serializer=lambda v: json.dumps(v).encode(\"utf-8\")
+          )
+        except Exception:
+          time.sleep(1)
+
+      while not os.path.exists(input_file):
+        time.sleep(1)
+
+      with open(input_file, \"r\", encoding=\"utf-8\") as f:
+        f.seek(0, 2)
+        while True:
+          line = f.readline()
+          if not line:
+            time.sleep(1)
+            continue
+          try:
+            payload = json.loads(line)
+            payload[\"persisted_at\"] = time.time()
+            producer.send(topic, payload)
+            producer.flush()
+          except Exception:
+            pass
+      '"
+    restart: unless-stopped
+
+volumes:
+  kafka-data:
+  shared-output:
+  triton-cache:
       KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
