@@ -1,0 +1,141 @@
+version: "3.9"
+
+services:
+  tritonserver:
+    image: nvcr.io/nvidia/tritonserver:24.08-py3
+    container_name: tritonserver-postgres
+    command:
+      - tritonserver
+      - --model-repository=/models
+      - --strict-model-config=false
+    ports:
+      - "8000:8000" # HTTP
+      - "8001:8001" # gRPC
+      - "8002:8002" # Metrics
+    volumes:
+      - ../models:/models:ro
+      - triton-cache:/opt/tritonserver/caches
+    shm_size: "1g"
+    gpus: all
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    container_name: postgres-sink
+    environment:
+      POSTGRES_DB: triton
+      POSTGRES_USER: triton
+      POSTGRES_PASSWORD: triton
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  request-producer:
+    image: python:3.11-slim
+    container_name: triton-producer-postgres
+    depends_on:
+      - tritonserver
+    environment:
+      TRITON_HTTP_URL: http://tritonserver:8000/v2/models/your_model/infer
+      OUTPUT_FILE: /shared/inference_outputs.jsonl
+      PRODUCER_INTERVAL_SECONDS: "2"
+    volumes:
+      - shared-output:/shared
+    command: >
+      sh -c "pip install --no-cache-dir requests &&
+      python -u -c '
+      import json, os, time, requests
+      url = os.environ[\"TRITON_HTTP_URL\"]
+      output_file = os.environ[\"OUTPUT_FILE\"]
+      interval = float(os.environ.get(\"PRODUCER_INTERVAL_SECONDS\", \"2\"))
+      payload = {
+        \"inputs\": [{\"name\": \"INPUT__0\", \"shape\": [1, 1], \"datatype\": \"FP32\", \"data\": [1.0]}],
+        \"outputs\": [{\"name\": \"OUTPUT__0\"}]
+      }
+      while True:
+        ts = time.time()
+        try:
+          resp = requests.post(url, json=payload, timeout=10)
+          record = {\"timestamp\": ts, \"status_code\": resp.status_code, \"response\": resp.json() if resp.ok else resp.text}
+        except Exception as e:
+          record = {\"timestamp\": ts, \"error\": str(e)}
+        with open(output_file, \"a\", encoding=\"utf-8\") as f:
+          f.write(json.dumps(record) + \"\\n\")
+        time.sleep(interval)
+      '"
+    restart: unless-stopped
+
+  result-writer:
+    image: python:3.11-slim
+    container_name: triton-consumer-postgres
+    depends_on:
+      - postgres
+      - request-producer
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: triton
+      PGUSER: triton
+      PGPASSWORD: triton
+      INPUT_FILE: /shared/inference_outputs.jsonl
+    volumes:
+      - shared-output:/shared
+    command: >
+      sh -c "pip install --no-cache-dir psycopg[binary] &&
+      python -u -c '
+      import json, os, time
+      import psycopg
+
+      conn = None
+      while conn is None:
+        try:
+          conn = psycopg.connect(
+            host=os.environ[\"PGHOST\"],
+            port=int(os.environ.get(\"PGPORT\", \"5432\")),
+            dbname=os.environ[\"PGDATABASE\"],
+            user=os.environ[\"PGUSER\"],
+            password=os.environ[\"PGPASSWORD\"]
+          )
+        except Exception:
+          time.sleep(1)
+
+      with conn:
+        with conn.cursor() as cur:
+          cur.execute(\"\"\"
+            CREATE TABLE IF NOT EXISTS inference_results (
+              id BIGSERIAL PRIMARY KEY,
+              persisted_at DOUBLE PRECISION NOT NULL,
+              payload JSONB NOT NULL
+            )
+          \"\"\")
+
+      input_file = os.environ[\"INPUT_FILE\"]
+      while not os.path.exists(input_file):
+        time.sleep(1)
+
+      with open(input_file, \"r\", encoding=\"utf-8\") as f:
+        f.seek(0, 2)
+        while True:
+          line = f.readline()
+          if not line:
+            time.sleep(1)
+            continue
+          try:
+            payload = json.loads(line)
+            with conn:
+              with conn.cursor() as cur:
+                cur.execute(
+                  \"INSERT INTO inference_results (persisted_at, payload) VALUES (%s, %s::jsonb)\",
+                  (time.time(), json.dumps(payload))
+                )
+          except Exception:
+            pass
+      '"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  shared-output:
+  triton-cache:

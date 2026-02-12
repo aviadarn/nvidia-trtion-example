@@ -1,0 +1,111 @@
+version: "3.9"
+
+services:
+  tritonserver:
+    image: nvcr.io/nvidia/tritonserver:24.08-py3
+    container_name: tritonserver-mongodb
+    command:
+      - tritonserver
+      - --model-repository=/models
+      - --strict-model-config=false
+    ports:
+      - "8000:8000" # HTTP
+      - "8001:8001" # gRPC
+      - "8002:8002" # Metrics
+    volumes:
+      - ../models:/models:ro
+      - triton-cache:/opt/tritonserver/caches
+    shm_size: "1g"
+    gpus: all
+    restart: unless-stopped
+
+  mongodb:
+    image: mongo:7
+    container_name: mongodb-sink
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb-data:/data/db
+    restart: unless-stopped
+
+  request-producer:
+    image: python:3.11-slim
+    container_name: triton-producer-mongodb
+    depends_on:
+      - tritonserver
+    environment:
+      TRITON_HTTP_URL: http://tritonserver:8000/v2/models/your_model/infer
+      OUTPUT_FILE: /shared/inference_outputs.jsonl
+      PRODUCER_INTERVAL_SECONDS: "2"
+    volumes:
+      - shared-output:/shared
+    command: >
+      sh -c "pip install --no-cache-dir requests &&
+      python -u -c '
+      import json, os, time, requests
+      url = os.environ[\"TRITON_HTTP_URL\"]
+      output_file = os.environ[\"OUTPUT_FILE\"]
+      interval = float(os.environ.get(\"PRODUCER_INTERVAL_SECONDS\", \"2\"))
+      payload = {
+        \"inputs\": [{\"name\": \"INPUT__0\", \"shape\": [1, 1], \"datatype\": \"FP32\", \"data\": [1.0]}],
+        \"outputs\": [{\"name\": \"OUTPUT__0\"}]
+      }
+      while True:
+        ts = time.time()
+        try:
+          resp = requests.post(url, json=payload, timeout=10)
+          record = {\"timestamp\": ts, \"status_code\": resp.status_code, \"response\": resp.json() if resp.ok else resp.text}
+        except Exception as e:
+          record = {\"timestamp\": ts, \"error\": str(e)}
+        with open(output_file, \"a\", encoding=\"utf-8\") as f:
+          f.write(json.dumps(record) + \"\\n\")
+        time.sleep(interval)
+      '"
+    restart: unless-stopped
+
+  result-writer:
+    image: python:3.11-slim
+    container_name: triton-consumer-mongodb
+    depends_on:
+      - mongodb
+      - request-producer
+    environment:
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: triton
+      MONGO_COLLECTION: inference_results
+      INPUT_FILE: /shared/inference_outputs.jsonl
+    volumes:
+      - shared-output:/shared
+    command: >
+      sh -c "pip install --no-cache-dir pymongo &&
+      python -u -c '
+      import json, os, time
+      from pymongo import MongoClient
+
+      client = MongoClient(os.environ[\"MONGO_URI\"])
+      collection = client[os.environ.get(\"MONGO_DB\", \"triton\")][os.environ.get(\"MONGO_COLLECTION\", \"inference_results\")]
+      input_file = os.environ[\"INPUT_FILE\"]
+
+      while not os.path.exists(input_file):
+        time.sleep(1)
+
+      with open(input_file, \"r\", encoding=\"utf-8\") as f:
+        f.seek(0, 2)
+        while True:
+          line = f.readline()
+          if not line:
+            time.sleep(1)
+            continue
+          try:
+            record = json.loads(line)
+            record[\"persisted_at\"] = time.time()
+            collection.insert_one(record)
+          except Exception:
+            pass
+      '"
+    restart: unless-stopped
+
+volumes:
+  mongodb-data:
+  shared-output:
+  triton-cache:
