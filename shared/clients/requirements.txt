@@ -1,0 +1,4 @@
+tritonclient[http]
+pymongo
+psycopg[binary]
+kafka-python
