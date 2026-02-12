@@ -1,0 +1,22 @@
+name: "preprocess"
+backend: "python"
+max_batch_size: 8
+input [
+  {
+    name: "RAW_TEXT"
+    data_type: TYPE_STRING
+    dims: [ 1 ]
+  }
+]
+output [
+  {
+    name: "TOKEN_IDS"
+    data_type: TYPE_INT32
+    dims: [ -1 ]
+  }
+]
+instance_group [
+  {
+    kind: KIND_CPU
+  }
+]
