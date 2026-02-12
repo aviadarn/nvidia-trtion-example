@@ -1,0 +1,50 @@
+services:
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.10-py3
+    command: ["tritonserver", "--model-repository=/models"]
+    ports: ["8000:8000", "8001:8001", "8002:8002"]
+    volumes:
+      - ../examples/onnx/model_repository:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+  kafka:
+    image: bitnami/kafka:3.7
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_KRAFT_CLUSTER_ID: MDEyMzQ1Njc4OTEyMzQ2Cg
+    ports: ["9092:9092"]
+  mongodb:
+    image: mongo:7
+  producer:
+    build:
+      context: ..
+      dockerfile: shared/clients/Dockerfile
+    depends_on: [triton, kafka]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: triton.inference
+    command: >
+      sh -c 'python triton_infer.py --url triton:8000 --model ensemble_onnx --text "kafka flow" > /tmp/payload.json &&
+             PAYLOAD_JSON="$$(cat /tmp/payload.json)" python kafka_producer.py'
+  consumer:
+    build:
+      context: ..
+      dockerfile: shared/clients/Dockerfile
+    depends_on: [kafka, mongodb]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: triton.inference
+      MONGODB_URI: mongodb://mongodb:27017
+    command: ["python", "kafka_to_mongo_consumer.py"]

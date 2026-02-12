@@ -1,0 +1,23 @@
+services:
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.10-py3
+    command: ["tritonserver", "--model-repository=/models"]
+    ports: ["8000:8000", "8001:8001", "8002:8002"]
+    volumes:
+      - ../examples/pytorch/model_repository:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+  mongodb:
+    image: mongo:7
+    ports: ["27017:27017"]
+  client:
+    build:
+      context: ..
+      dockerfile: shared/clients/Dockerfile
+    depends_on: [triton, mongodb]
+    command: >
+      sh -c 'python triton_infer.py --url triton:8000 --model ensemble_pytorch --text "mongo flow" > /tmp/payload.json &&
+             PAYLOAD_JSON="$$(cat /tmp/payload.json)" python mongodb_writer.py'
