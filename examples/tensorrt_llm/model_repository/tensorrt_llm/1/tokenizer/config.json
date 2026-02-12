@@ -1,0 +1,4 @@
+{
+  "architectures": ["LlamaForCausalLM"],
+  "model_type": "llama"
+}

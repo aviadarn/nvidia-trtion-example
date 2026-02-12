@@ -1,0 +1,31 @@
+version: '3.9'
+services:
+  triton:
+    image: nvcr.io/nvidia/tritonserver:24.10-vllm-python-py3
+    command: ["tritonserver", "--model-repository=/models"]
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
+  vllm:
+    image: vllm/vllm-openai:latest
+    command: ["sleep", "infinity"]
+
+  sink-writer:
+    image: python:3.11-slim
+    command: ["sleep", "infinity"]
+    depends_on:
+      - postgres
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: inference
+    ports:
+      - "5432:5432"

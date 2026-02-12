@@ -1,0 +1,6 @@
+{
+  "engine_dir": "engines",
+  "max_batch_size": 8,
+  "max_input_len": 2048,
+  "max_output_len": 512
+}
