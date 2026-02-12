@@ -68,3 +68,24 @@ Each example includes the Triton-required structure:
 
 - `model_repository/<model_name>/1/` for versioned model artifacts
 - `model_repository/<model_name>/config.pbtxt` for model metadata and backend configuration
+
+## Example smoke tests
+
+Use the endpoint smoke tests to verify each example environment comes up and inference returns non-empty output:
+
+```bash
+python3 -m unittest tests/test_example_endpoints.py
+```
+
+To automatically spin up Triton per example and run checks:
+
+```bash
+make test-examples
+```
+
+By default this runs `pytorch`, `tensorflow`, `onnx`, and `python_backend`.
+To also include `tensorrt_llm` and `vllm`, set `RUN_LLM_EXAMPLES=1`:
+
+```bash
+RUN_LLM_EXAMPLES=1 make test-examples
+```

@@ -65,3 +65,8 @@ infer:
 
 smoke:
 	bash scripts/smoke_all.sh
+
+.PHONY: test-examples
+
+test-examples:
+	bash scripts/test_each_example.sh
