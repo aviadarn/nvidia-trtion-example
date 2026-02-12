@@ -1,0 +1,9 @@
+name: "py_postprocess"
+backend: "python"
+max_batch_size: 8
+input [
+  { name: "OUTPUT0" data_type: TYPE_FP32 dims: [ 4 ] }
+]
+output [
+  { name: "FINAL_TEXT" data_type: TYPE_STRING dims: [ 1 ] }
+]
