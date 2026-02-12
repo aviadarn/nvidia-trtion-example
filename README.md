@@ -1,35 +1,17 @@
-# NVIDIA Triton End-to-End Examples Monorepo
+# NVIDIA Triton model repository examples
 
-This repository provides practical Triton Inference Server examples for:
+This repository provides example `model_repository/` layouts for common Triton backends.
 
-- PyTorch backend
-- TensorFlow backend
-- ONNX Runtime backend
-- Python backend
-- TensorRT-LLM backend
-- vLLM backend
+## Included examples
 
-All examples include **ensemble models** and deployment examples with result persistence to:
+- `examples/pytorch`
+- `examples/tensorflow`
+- `examples/onnx`
+- `examples/python`
+- `examples/tensorrt_llm`
+- `examples/vllm`
 
-- MongoDB
-- PostgreSQL
-- Kafka
+Each example includes the Triton-required structure:
 
-## Repository layout
-
-- `examples/*/model_repository`: Triton model repositories per backend.
-- `shared/clients`: Python request + sink adapter utilities.
-- `deploy`: Docker Compose stacks for Triton + sink(s).
-- `scripts`: Basic smoke checks and sink verification commands.
-
-## Quick start
-
-```bash
-make run-mongodb
-make infer SAMPLE_MODEL=ensemble_pytorch
-```
-
-## Notes
-
-- This scaffold is designed to be extended with real model artifacts.
-- `TensorRT-LLM` and `vLLM` examples include deployment/config placeholders because exact engines/tokenizers vary by model.
+- `model_repository/<model_name>/1/` for versioned model artifacts
+- `model_repository/<model_name>/config.pbtxt` for model metadata and backend configuration

@@ -1,0 +1,4 @@
+{
+  "model_max_length": 4096,
+  "tokenizer_class": "AutoTokenizer"
+}
